@@ -4,12 +4,14 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.*;
 
 public class DataLeakChecker {
 
     private static final String API_URL = "https://haveibeenpwned.com/api/v3/breachedaccount/";
+    private static final String API_KEY = System.getenv("HIBP_API_KEY");  // Чтение API-ключа из переменной окружения
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException, ExecutionException {
         // Пример списка логинов для проверки
         List<String> usernames = Arrays.asList(
                 "testuser123",
@@ -17,17 +19,40 @@ public class DataLeakChecker {
                 "anotheruser789"
         );
 
-        // Обрабатываем каждый логин из списка
+        // Создаем пул потоков для параллельной обработки
+        ExecutorService executor = Executors.newFixedThreadPool(5);
+        List<Callable<Void>> tasks = new ArrayList<>();
+
+        // Добавляем задачи в пул потоков
         for (String username : usernames) {
-            try {
-                checkDataBreach(username);
-            } catch (Exception e) {
-                System.out.println("Error checking data breach for " + username + ": " + e.getMessage());
-            }
+            tasks.add(() -> {
+                try {
+                    checkDataBreach(username);
+                } catch (Exception e) {
+                    System.err.println("Error checking data breach for " + username + ": " + e.getMessage());
+                }
+                return null;
+            });
         }
+
+        // Запускаем все задачи
+        List<Future<Void>> futures = executor.invokeAll(tasks);
+
+        // Ожидаем завершения всех задач
+        for (Future<Void> future : futures) {
+            future.get();
+        }
+
+        // Закрываем пул потоков
+        executor.shutdown();
     }
 
     public static void checkDataBreach(String username) throws Exception {
+        // Проверка на наличие API-ключа
+        if (API_KEY == null || API_KEY.isEmpty()) {
+            throw new IllegalStateException("API key is missing. Set the HIBP_API_KEY environment variable.");
+        }
+
         // Формируем запрос для API
         String urlString = API_URL + username;
 
@@ -35,17 +60,17 @@ public class DataLeakChecker {
         URL url = new URL(urlString);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
 
-        // Настройка заголовков, для использования API, потребуется API-ключ
+        // Настройка заголовков
         connection.setRequestMethod("GET");
         connection.setRequestProperty("User-Agent", "Java Data Leak Checker");
-        connection.setRequestProperty("hibp-api-key", "YOUR_API_KEY"); // Замените на ваш API-ключ
+        connection.setRequestProperty("hibp-api-key", API_KEY); // API-ключ из переменной окружения
 
         // Проверяем код ответа
         int responseCode = connection.getResponseCode();
         if (responseCode == HttpURLConnection.HTTP_OK) {
             BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
             String inputLine;
-            StringBuffer response = new StringBuffer();
+            StringBuilder response = new StringBuilder();
             while ((inputLine = in.readLine()) != null) {
                 response.append(inputLine);
             }
@@ -59,7 +84,7 @@ public class DataLeakChecker {
                 System.out.println("The account '" + username + "' has not been found in any known breaches.");
             }
         } else {
-            System.out.println("Error: Unable to fetch data for " + username + ", HTTP Code: " + responseCode);
+            System.err.println("Error: Unable to fetch data for " + username + ", HTTP Code: " + responseCode);
         }
     }
 }
